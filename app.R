@@ -92,7 +92,7 @@ getZ <- function(file, include.all.moves = FALSE) {
   chip <- c()
   stack <- c()
   image <- c()
-browser()
+
   for(i in 1:length(lines)){
     if(grepl("Z Stage Move", lines[i])) {
       movetimes <- c(movetimes, gsub("(\\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{4}).*", "\\1", lines[i]))

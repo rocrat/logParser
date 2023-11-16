@@ -14,7 +14,7 @@ library(plotly)
 ui <- fluidPage(
 
     # Application title
-    titlePanel("Log File Parser (v0.0.2)"),
+    titlePanel("Log File Parser (v0.0.3)"),
 
     # Sidebar with a slider input for number of bins
     sidebarLayout(
@@ -61,17 +61,31 @@ server <- function(input, output) {
 
   output$timeplot <- renderPlotly({
     req(dat$data)
-    p <- dat$data %>%
-      filter(types == "Absolute") %>%
-      tidyr::pivot_longer(c(movetime, imagetime), names_to = "Event_Type",
-                          names_pattern = "(move|image)time", values_to = "Time") %>%
-      mutate(stackImage = paste0(stack, ":", image)) %>%
-      ggplot(aes(x = Time, y = distances, text = stackImage)) +
-      geom_point(aes(color = Event_Type)) +
-      geom_line(aes(group = chip)) +
-      facet_wrap(~chip, ncol = 1) +
-      ylab("Distance (Absolute)") +
-      theme_bw()
+    if(input$allMoves){
+      p <- dat$data %>%
+        filter(is.na(types) | types == "Absolute") %>%
+        tidyr::pivot_longer(c(movetime, imagetime), names_to = "Event_Type",
+                            names_pattern = "(move|image)time", values_to = "Time") %>%
+        mutate(stackImage = paste0(row, ":", col, ":", image)) %>%
+        ggplot(aes(x = Time, y = distances, text = stackImage)) +
+        geom_point(aes(color = Event_Type)) +
+        geom_line(aes(group = chip)) +
+        facet_wrap(~chip, ncol = 1) +
+        ylab("Distance (Absolute)") +
+        theme_bw()
+    } else {
+      p <- dat$data %>%
+        tidyr::pivot_longer(c(movetime, imagetime), names_to = "Event_Type",
+                            names_pattern = "(move|image)time", values_to = "Time") %>%
+        mutate(stackImage = paste0(row, ":", col, ":", image)) %>%
+        ggplot(aes(x = Time, y = distances, text = stackImage)) +
+        geom_point(aes(color = Event_Type)) +
+        geom_line(aes(group = chip)) +
+        facet_wrap(~chip, ncol = 1) +
+        ylab("Distance (Absolute)") +
+        theme_bw()
+    }
+
     plotly::ggplotly(p)
   })
 
@@ -82,6 +96,7 @@ server <- function(input, output) {
 }
 
 getZ <- function(file, include.all.moves = FALSE) {
+
   lines <- readLines(con = file)
   movetimes <- c()
   speeds <- c()
@@ -90,9 +105,11 @@ getZ <- function(file, include.all.moves = FALSE) {
   types <- c()
   imagetimes <- c()
   chip <- c()
+  Row <- c()
+  Col <- c()
   stack <- c()
   image <- c()
-browser()
+
   for(i in 1:length(lines)){
     if(grepl("Z Stage Move", lines[i])) {
       movetimes <- c(movetimes, gsub("(\\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{4}).*", "\\1", lines[i]))
@@ -100,49 +117,44 @@ browser()
       currents <- c(currents, as.numeric(gsub(".*current: (\\d+\\.*\\d*).*", "\\1", lines[i])))
       distances <- c(distances, as.numeric(gsub(".*distance: (\\-*\\d+\\.*\\d*).*", "\\1", lines[i])))
       types <- c(types, gsub(".*type ([A-Za-z]+).*", "\\1", lines[i]))
+      imagetimes <- c(imagetimes, NA)
+      chip <- c(chip, NA)
+      Row <- c(Row, NA)
+      Col <- c(Col, NA)
+      image <- c(image, NA)
     }
-    if(grepl("Chip \\d+ \\- stack\\d+:", lines[i])){
-      if(grepl("added (Red|Amber) image \\d+", lines[i]) &
-         as.numeric(gsub(".*image (\\d+)", "\\1", lines[i])) > 1) next;
-      if(grepl("Saving \\d+ raw images", lines[i])) next;
-      if(length(speeds) - 1 < length(chip)) {
-        # Repeat previous z-stage location since did not move from previous image
-        numImages <- length(chip) - length(speeds) + 1
-        movetimes <- c(movetimes, rep(tail(movetimes, 1), numImages))
-        speeds <- c(speeds, rep(tail(speeds, 1), numImages))
-        currents <- c(currents, rep(tail(currents, 1), numImages))
-        distances <- c(distances, rep(tail(distances, 1), numImages))
-        types <- c(types, rep(tail(types, 1), numImages))
-      }
-      if(length(speeds) - 1 > length(chip)) {
-        lengthDiff <- length(speeds) - length(chip) - 1
-        imagetimes <- c(imagetimes, rep(NA, lengthDiff))
-        chip <- c(chip, rep(NA, lengthDiff))
-        stack <- c(stack, rep(NA, lengthDiff))
-        image <- c(image, rep(NA, lengthDiff))
-      }
+
+    if(grepl("Chip \\d, Row \\d, Column", lines[i])) {
+      movetimes <- c(movetimes, NA)
+      speeds <- c(speeds, NA)
+      currents <- c(currents, NA)
+      distances <- c(distances, as.numeric(gsub(".*Focus (\\d+\\.\\d+),.*", "\\1", lines[i])))
+      types <- c(types, NA)
       imagetimes <- c(imagetimes, gsub("(\\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{4}).*", "\\1", lines[i]))
       chip <- c(chip, gsub(".*(Chip \\d+).*", "\\1", lines[i]))
-      stack <- c(stack, gsub(".*\\- (stack\\d+).*", "\\1", lines[i]))
-      image <- c(image, gsub(".*added ([A-Za-z]+ image \\d+)", "\\1", lines[i]))
+      Row <- c(Row, gsub(".*(Row \\d+).*", "\\1", lines[i]))
+      Col <- c(Col, gsub(".*(Column \\d+).*", "\\1", lines[i]))
+      image <- c(image, paste0(gsub(".*DEBUG\\|([A-Za-z\\-]+):.*", "\\1", lines[i]),
+                               ":",
+                               gsub(".*Focus \\d+\\.\\d+, ([A-Za-z]+)\\s+$", "\\1", lines[i])))
     }
-  }
-  # Fix lengths if they don't match----
-  if(length(speeds) > length(chip)){
-    lengthDiff <- length(speeds) - length(chip)
-    imagetimes <- c(imagetimes, rep(NA, lengthDiff))
-    chip <- c(chip, rep(NA, lengthDiff))
-    stack <- c(stack, rep(NA, lengthDiff))
-    image <- c(image, rep(NA, lengthDiff))
-  }
 
-  if(length(chip) > length(speeds)){
-    lengthDiff <- length(chip) - length(speeds)
-    movetimes <- c(movetimes, rep(NA, lengthDiff))
-    speeds <- c(speeds, rep(NA, lengthDiff))
-    currents <- c(currents, rep(NA, lengthDiff))
-    distances <- c(distances, rep(NA, lengthDiff))
-    types <- c(types, rep(NA, lengthDiff))
+  # Fix lengths if they don't match----
+  # if(length(speeds) > length(chip)){
+  #   lengthDiff <- length(speeds) - length(chip)
+  #   imagetimes <- c(imagetimes, rep(NA, lengthDiff))
+  #   chip <- c(chip, rep(NA, lengthDiff))
+  #   stack <- c(stack, rep(NA, lengthDiff))
+  #   image <- c(image, rep(NA, lengthDiff))
+  # }
+  #
+  # if(length(chip) > length(speeds)){
+  #   lengthDiff <- length(chip) - length(speeds)
+  #   movetimes <- c(movetimes, rep(NA, lengthDiff))
+  #   speeds <- c(speeds, rep(NA, lengthDiff))
+  #   currents <- c(currents, rep(NA, lengthDiff))
+  #   distances <- c(distances, rep(NA, lengthDiff))
+  #   types <- c(types, rep(NA, lengthDiff))
   }
 
   resdf <- data.frame(MoveID = 1:length(speeds),
@@ -153,7 +165,8 @@ browser()
                       types = types,
                       imagetime = suppressWarnings(as.POSIXct(imagetimes)),
                       chip = chip,
-                      stack = stack,
+                      row = Row,
+                      col = Col,
                       image = image)
   if(!include.all.moves){
     resdf <- resdf[!is.na(resdf$chip), ]

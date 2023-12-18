@@ -14,15 +14,17 @@ library(plotly)
 ui <- fluidPage(
 
     # Application title
-    titlePanel("Log File Parser (v0.0.3)"),
+    titlePanel("Log File Parser (v0.0.4)"),
 
     # Sidebar with a slider input for number of bins
     sidebarLayout(
       sidebarPanel(
         fileInput("logfile", "Upload Log File", accept = ".log",
                   multiple = FALSE),
+        uiOutput("startsTable"),
         checkboxInput("allMoves", "Inlcude all Z Movements?", value = FALSE),
-        downloadButton("getRes", "Download Results")
+        downloadButton("getRes", "Download Results"),
+        width = 2
       ),
 
       # Show a plot of the generated distribution
@@ -36,22 +38,24 @@ ui <- fluidPage(
           ),
           tabPanel("Focus Value Plots",
                    fluidRow(
-                     column(2,
+                     column(1,
                             uiOutput("stackSelector")
                      ),
-                     column(10,
+                     column(11,
                             tabsetPanel(
                               tabPanel("Cold Images",
                                 fluidRow(
                                   column(12,
-                                         plotlyOutput("focusPlot")
+                                         plotlyOutput("focusPlot",
+                                                      height = "900px")
                                          )
                                 )
                               ),
                               tabPanel("Hot Images",
                                        fluidRow(
                                          column(12,
-                                                plotlyOutput("focusPlotHot")
+                                                plotlyOutput("focusPlotHot",
+                                                             height = "900px")
                                          )
                                        )
                               )
@@ -60,7 +64,8 @@ ui <- fluidPage(
                      )
                    ),
           )
-        )
+        ),
+        width = 10
       )
     )
 )
@@ -68,20 +73,58 @@ ui <- fluidPage(
 # Define server logic required to draw a histogram
 server <- function(input, output) {
   dat <- reactiveValues(data = NULL,
-                        focus = NULL)
+                        focus = NULL,
+                        starts = NULL)
 
-  observeEvent(input$logfile,{
-    zres <- getZ(input$logfile$datapath,
+  observeEvent(input$logfile, {
+    dat$starts <- getStarts(input$logfile$datapath)
+  })
+
+  observe({
+    shiny::validate(
+      need(!is.null(dat$starts), ""),
+      need(input$startList, "")
+    )
+    lines <- readLines(input$logfile$datapath)
+
+    subdata <- dat$starts
+    subdata$include <- dat$starts$starts %in% input$startList
+    uselines <- c()
+    for(i in 1:nrow(subdata)){
+      if(subdata$include[i]){
+        if(i < nrow(subdata)){
+          uselines <- c(uselines, subdata$lineNums[i]:(subdata$lineNums[i+1]-1))
+        } else {
+          uselines <- c(uselines, subdata$lineNums[i]:length(lines))
+        }
+      }
+    }
+    sublines <- lines[uselines]
+
+    zres <- getZ(sublines,
                  include.all.moves = input$allMoves)
     dat$data <- zres$resdf
     dat$focus <- zres$focusdf
+
   })
 
   output$stackSelector <- renderUI({
     radioButtons("selectedStack", "Select a SubArray Index", choices = unique(dat$focus$stack))
   })
 
-  output$datTable <- DT::renderDataTable(dat$data)
+  output$datTable <- DT::renderDataTable({
+    DT::datatable(dat$data, options = list(paging = FALSE, scrollY = "400px"))
+  })
+
+  output$startsTable <- renderUI({
+    shiny::validate(
+      need(input$logfile$datapath, "")
+    )
+    checkboxGroupInput("startList", "Select Run Start Time(s)",
+                       choices = dat$starts$starts,
+                       selected = dat$starts$starts)
+  })
+
   output$getRes <- downloadHandler(
     filename = function(){
       paste0(gsub("\\.log$", "", input$logfile$name), "_Z_Values.csv")
@@ -174,9 +217,9 @@ server <- function(input, output) {
   })
 }
 
-getZ <- function(file, include.all.moves = FALSE) {
+getZ <- function(lines, include.all.moves = FALSE) {
 
-  lines <- readLines(con = file)
+  # lines <- readLines(con = file)
   movetimes <- c()
   speeds <- c()
   currents <- c()
@@ -301,7 +344,35 @@ getZ <- function(file, include.all.moves = FALSE) {
               "focusdf" = dplyr::bind_rows(focusList)))
 }
 
+getStarts <- function(file) {
+  lines <- readLines(con = file)
+  starts <- c()
+  i <- 0
+  while(length(starts) == 0){
+    i <- i + 1
+    if(grepl("(\\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{4})", lines[i])){
+      starts <- c(gsub("(\\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{4}).*", "\\1", lines[i]))
+      lineNums <- c(i)
+    }
+  }
 
+
+  for(i in 1:length(lines)) {
+    if(grepl("Collection", lines[i])){
+      starts <- c(starts, gsub("(\\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{4}).*", "\\1", lines[i+3]))
+      lineNums <- c(lineNums, i)
+    } else {
+      next;
+    }
+  }
+  # pstarts <- as.POSIXct(starts)
+  # dates <- as.Date.POSIXct(pstarts)
+  # times <- format(pstarts, format = "%H:%M:%S")
+  data.frame(starts = starts,
+             lineNums = lineNums)
+
+
+}
 
 
 # Run the application

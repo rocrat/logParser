@@ -31,8 +31,34 @@ ui <- fluidPage(
           tabPanel("Table",
                    DT::dataTableOutput("datTable")
           ),
-          tabPanel("Plots",
+          tabPanel("Z-Movement Plots",
                    uiOutput('timePlotSized')
+          ),
+          tabPanel("Focus Value Plots",
+                   fluidRow(
+                     column(2,
+                            uiOutput("stackSelector")
+                     ),
+                     column(10,
+                            tabsetPanel(
+                              tabPanel("Cold Images",
+                                fluidRow(
+                                  column(12,
+                                         plotlyOutput("focusPlot")
+                                         )
+                                )
+                              ),
+                              tabPanel("Hot Images",
+                                       fluidRow(
+                                         column(12,
+                                                plotlyOutput("focusPlotHot")
+                                         )
+                                       )
+                              )
+                            )
+
+                     )
+                   ),
           )
         )
       )
@@ -41,11 +67,18 @@ ui <- fluidPage(
 
 # Define server logic required to draw a histogram
 server <- function(input, output) {
-  dat <- reactiveValues(data = NULL)
+  dat <- reactiveValues(data = NULL,
+                        focus = NULL)
 
   observeEvent(input$logfile,{
-    dat$data <- getZ(input$logfile$datapath,
-                       include.all.moves = input$allMoves)
+    zres <- getZ(input$logfile$datapath,
+                 include.all.moves = input$allMoves)
+    dat$data <- zres$resdf
+    dat$focus <- zres$focusdf
+  })
+
+  output$stackSelector <- renderUI({
+    radioButtons("selectedStack", "Select a SubArray Index", choices = unique(dat$focus$stack))
   })
 
   output$datTable <- DT::renderDataTable(dat$data)
@@ -93,6 +126,52 @@ server <- function(input, output) {
     height = paste0(length(unique(dat$data$chip))*300, "px")
     plotlyOutput('timeplot', width = "100%", height = height)
   })
+
+  output$focusPlot <- renderPlotly({
+    shiny::validate({
+      need(input$selectedStack, "")
+    })
+    plotdf <- dat$focus %>%
+      filter(stack == input$selectedStack,
+             imageType != "HotBlue") %>%
+      mutate(timeSide = paste0(focusTime, ";", side))
+
+    plotdf %>%
+      ggplot(aes(x = zvals, y = fvals, group = timeSide)) +
+      geom_point(aes(color = timeSide)) +
+      geom_line() +
+      facet_grid(imageType ~ chip) +
+      guides(color = "none") +
+      geom_vline(data = plotdf %>%
+                   select(imageType, chip, focusZ, focusTime, timeSide) %>%
+                   distinct(),
+                 aes(xintercept = focusZ, color = timeSide)) +
+      ylab("Focus Value") +
+      xlab("Z Position")
+  })
+
+  output$focusPlotHot <- renderPlotly({
+    shiny::validate({
+      need(input$selectedStack, "")
+    })
+    plotdf <- dat$focus %>%
+      filter(stack == input$selectedStack,
+             imageType == "HotBlue") %>%
+      mutate(timeSide = paste0(focusTime, ";", side))
+
+    plotdf %>%
+      ggplot(aes(x = zvals, y = fvals, group = timeSide)) +
+      geom_point(aes(color = focusTime)) +
+      geom_line() +
+      facet_wrap(~ focusTime) +
+      guides(color = "none") +
+      geom_vline(data = plotdf %>%
+                   select(imageType, chip, focusZ, focusTime, timeSide) %>%
+                   distinct(),
+                 aes(xintercept = focusZ, color = timeSide)) +
+      ylab("Focus Value") +
+      xlab("Z Position")
+  })
 }
 
 getZ <- function(file, include.all.moves = FALSE) {
@@ -109,6 +188,7 @@ getZ <- function(file, include.all.moves = FALSE) {
   Col <- c()
   stack <- c()
   image <- c()
+  focusList <- list()
 
   for(i in 1:length(lines)){
     if(grepl("Z Stage Move", lines[i])) {
@@ -122,6 +202,52 @@ getZ <- function(file, include.all.moves = FALSE) {
       Row <- c(Row, NA)
       Col <- c(Col, NA)
       image <- c(image, NA)
+    }
+
+    if(grepl("Focus values", lines[i])) {
+      if(grepl("Peak Found", lines[i]) & grepl("Peak Found", lines[i + 1])){
+        # Grab the two lines of focus values and then move foward until a chip is found and record the chip and stack
+        vals1 <- stringr::str_split(gsub(".*values\\s(.+)\\sPeak\\:.*", "\\1", lines[i]),
+                                    pattern = ",", simplify = TRUE)[1:5]
+        zvals1 <- as.numeric(gsub("(\\d+\\.\\d+)\\s\\:.*", "\\1", vals1))
+        fvals1 <- as.numeric(gsub(".*\\:\\s(\\d+\\.\\d+)", "\\1", vals1))
+        peak1 <- as.numeric(gsub(".*Peak\\:(\\d+\\.\\d+).*", "\\1", lines[i]))
+
+        vals2 <- stringr::str_split(gsub(".*values\\s(.+)\\sPeak\\:.*", "\\1", lines[i+1]),
+                                    pattern = ",", simplify = TRUE)[1:5]
+        zvals2 <- as.numeric(gsub("(\\d+\\.\\d+)\\s\\:.*", "\\1", vals2))
+        fvals2 <- as.numeric(gsub(".*\\:\\s(\\d+\\.\\d+)", "\\1", vals2))
+        peak2 <- as.numeric(gsub(".*Peak\\:(\\d+\\.\\d+).*", "\\1", lines[i+1]))
+
+        chipnum <- NULL
+        j <- i + 1
+        while(is.null(chipnum)){
+          j <- j + 1
+          if(grepl("Focus found", lines[j])) {
+            chipnum <- gsub(".*Chip\\:\\s(\\d).*", "\\1", lines[j])
+            imageType <- gsub(".*Plane\\:\\s([A-Za-z]+).*", "\\1", lines[j])
+            stack <- gsub(".*Index\\:\\s(\\d+).*", "\\1", lines[j])
+            focusVal <- as.numeric(gsub(".*Focus Z\\:\\s(\\d+\\.\\d+).*", "\\1", lines[j]))
+            focusTime <- gsub("(\\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{4}).*", "\\1", lines[j])
+          }
+        }
+
+        #Put everything together
+        focusdf <- data.frame(zvals = c(zvals1, zvals2),
+                              fvals = c(fvals1, fvals2),
+                              side = rep(c("Left", "Right"), each = length(zvals1)),
+                              peak = rep(c(peak1, peak2), each = length(zvals1)),
+                              chip = chipnum,
+                              imageType = imageType,
+                              stack = stack,
+                              focusZ = focusVal,
+                              focusTime = focusTime)
+
+        focusList[[length(focusList) + 1]] <- focusdf
+
+      } else {
+        next;
+      }
     }
 
     if(grepl("Chip \\d, Row \\d, Column", lines[i])) {
@@ -171,7 +297,8 @@ getZ <- function(file, include.all.moves = FALSE) {
   if(!include.all.moves){
     resdf <- resdf[!is.na(resdf$chip), ]
   }
-  return(resdf)
+  return(list("resdf" = resdf,
+              "focusdf" = dplyr::bind_rows(focusList)))
 }
 
 
